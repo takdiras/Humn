@@ -1,6 +1,6 @@
 [package]
 name = "humn"
-version = "0.2.0"
+version = "0.2.1"
 description = "A desktop lyrics overlay app"
 authors = ["you"]
 edition = "2021"
