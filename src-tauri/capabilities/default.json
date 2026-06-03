@@ -17,6 +17,6 @@
     "core:window:allow-is-maximized",
     "core:app:allow-app-hide",
     "updater:default",
-    "core:app:allow-app-exit"
+    "process:default"
   ]
 }
