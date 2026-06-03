@@ -32,6 +32,7 @@ export function useNowPlaying() {
   const [info, setInfo] = useState<NowPlayingInfo | null>(null);
   const [positionMs, setPositionMs] = useState(0);
   const clock = useRef<Clock | null>(null);
+  const lastSmtcPos = useRef<number>(-1);
   const lastIsPlaying = useRef<boolean | null>(null);
 
   useEffect(() => {
@@ -40,6 +41,7 @@ export function useNowPlaying() {
         if (data) {
           setInfo(data);
           clock.current = makeClock(data.position_ms, data.is_playing, data.duration_ms);
+          lastSmtcPos.current = data.position_ms;
           lastIsPlaying.current = data.is_playing;
         }
       })
@@ -53,11 +55,13 @@ export function useNowPlaying() {
           e.payload.is_playing,
           e.payload.duration_ms
         );
+        lastSmtcPos.current = e.payload.position_ms;
         lastIsPlaying.current = e.payload.is_playing;
         setPositionMs(e.payload.position_ms);
       } else {
         setInfo(null);
         clock.current = null;
+        lastSmtcPos.current = -1;
         lastIsPlaying.current = null;
         setPositionMs(0);
       }
@@ -67,26 +71,30 @@ export function useNowPlaying() {
       const smtc = e.payload;
       setInfo((prev) => (prev ? { ...prev, is_playing: smtc.is_playing } : prev));
 
+      const playStateChanged = lastIsPlaying.current !== smtc.is_playing;
+
       if (smtc.position_ms <= 0) {
-        // Position unreadable — at minimum stop the clock if play state changed.
-        if (lastIsPlaying.current !== smtc.is_playing) {
+        // Position unreadable — still honour a play-state change so pause works.
+        if (playStateChanged) {
           const c = clock.current;
           if (c) {
-            clock.current = {
-              ...c,
-              running: smtc.is_playing,
-              syncedAt: performance.now(),
-            };
+            clock.current = { ...c, running: smtc.is_playing, syncedAt: performance.now() };
           }
           lastIsPlaying.current = smtc.is_playing;
         }
         return;
       }
 
-      // Always recalibrate from SMTC on every tick. This ensures pause and seek
-      // are reflected within one poll interval (100 ms) with no drift accumulation.
-      clock.current = makeClock(smtc.position_ms, smtc.is_playing, smtc.duration_ms);
-      lastIsPlaying.current = smtc.is_playing;
+      const smtcPositionChanged = smtc.position_ms !== lastSmtcPos.current;
+
+      // Recalibrate only when something actually changed.
+      // When SMTC position is unchanged the clock free-runs, giving smooth
+      // interpolation between slow player updates (Spotify updates ~1 s).
+      if (playStateChanged || smtcPositionChanged) {
+        clock.current = makeClock(smtc.position_ms, smtc.is_playing, smtc.duration_ms);
+        lastSmtcPos.current = smtc.position_ms;
+        lastIsPlaying.current = smtc.is_playing;
+      }
     });
 
     const timer = setInterval(() => {
