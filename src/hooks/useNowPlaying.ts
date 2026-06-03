@@ -11,24 +11,27 @@ export interface NowPlayingInfo {
 }
 
 interface Clock {
-  offset: number;    // position (ms) at last sync
-  syncedAt: number;  // performance.now() when offset was recorded
+  offset: number;   // position (ms) at last sync
+  syncedAt: number; // performance.now() when offset was recorded
   running: boolean;
+  maxMs: number;    // duration cap — prevents runaway past end of track
 }
 
 function clockNow(c: Clock): number {
-  return c.running ? c.offset + (performance.now() - c.syncedAt) : c.offset;
+  const raw = c.running
+    ? c.offset + (performance.now() - c.syncedAt)
+    : c.offset;
+  return c.maxMs > 0 ? Math.min(raw, c.maxMs) : raw;
 }
 
-function makeClock(positionMs: number, running: boolean): Clock {
-  return { offset: positionMs, syncedAt: performance.now(), running };
+function makeClock(positionMs: number, running: boolean, maxMs: number): Clock {
+  return { offset: positionMs, syncedAt: performance.now(), running, maxMs };
 }
 
 export function useNowPlaying() {
   const [info, setInfo] = useState<NowPlayingInfo | null>(null);
   const [positionMs, setPositionMs] = useState(0);
   const clock = useRef<Clock | null>(null);
-  const lastSmtcPos = useRef<number>(-1);  // last SMTC-reported position we acted on
   const lastIsPlaying = useRef<boolean | null>(null);
 
   useEffect(() => {
@@ -36,8 +39,7 @@ export function useNowPlaying() {
       .then((data) => {
         if (data) {
           setInfo(data);
-          clock.current = makeClock(data.position_ms, data.is_playing);
-          lastSmtcPos.current = data.position_ms;
+          clock.current = makeClock(data.position_ms, data.is_playing, data.duration_ms);
           lastIsPlaying.current = data.is_playing;
         }
       })
@@ -46,14 +48,16 @@ export function useNowPlaying() {
     const unlistenTrack = listen<NowPlayingInfo | null>("track-changed", (e) => {
       if (e.payload) {
         setInfo(e.payload);
-        clock.current = makeClock(e.payload.position_ms, e.payload.is_playing);
-        lastSmtcPos.current = e.payload.position_ms;
+        clock.current = makeClock(
+          e.payload.position_ms,
+          e.payload.is_playing,
+          e.payload.duration_ms
+        );
         lastIsPlaying.current = e.payload.is_playing;
         setPositionMs(e.payload.position_ms);
       } else {
         setInfo(null);
         clock.current = null;
-        lastSmtcPos.current = -1;
         lastIsPlaying.current = null;
         setPositionMs(0);
       }
@@ -61,22 +65,28 @@ export function useNowPlaying() {
 
     const unlistenTick = listen<NowPlayingInfo>("position-tick", (e) => {
       const smtc = e.payload;
-      setInfo((prev) => prev ? { ...prev, is_playing: smtc.is_playing } : prev);
+      setInfo((prev) => (prev ? { ...prev, is_playing: smtc.is_playing } : prev));
 
-      if (smtc.position_ms <= 0) return; // ignore SMTC read glitches
-
-      const c = clock.current;
-      const playStateChanged = lastIsPlaying.current !== smtc.is_playing;
-      const smtcPositionChanged = smtc.position_ms !== lastSmtcPos.current;
-
-      if (playStateChanged || smtcPositionChanged) {
-        // Recalibrate clock whenever SMTC reports a new position or play state changes.
-        // If SMTC position is the same as last tick, the clock continues free-running.
-        const pos = smtc.position_ms > 0 ? smtc.position_ms : (c ? clockNow(c) : 0);
-        clock.current = makeClock(pos, smtc.is_playing);
-        lastSmtcPos.current = smtc.position_ms;
-        lastIsPlaying.current = smtc.is_playing;
+      if (smtc.position_ms <= 0) {
+        // Position unreadable — at minimum stop the clock if play state changed.
+        if (lastIsPlaying.current !== smtc.is_playing) {
+          const c = clock.current;
+          if (c) {
+            clock.current = {
+              ...c,
+              running: smtc.is_playing,
+              syncedAt: performance.now(),
+            };
+          }
+          lastIsPlaying.current = smtc.is_playing;
+        }
+        return;
       }
+
+      // Always recalibrate from SMTC on every tick. This ensures pause and seek
+      // are reflected within one poll interval (100 ms) with no drift accumulation.
+      clock.current = makeClock(smtc.position_ms, smtc.is_playing, smtc.duration_ms);
+      lastIsPlaying.current = smtc.is_playing;
     });
 
     const timer = setInterval(() => {
