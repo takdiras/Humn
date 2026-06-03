@@ -62,8 +62,3 @@ pub fn get_now_playing() -> Option<NowPlayingInfo> {
     })
 }
 
-/// One-shot query without a persistent manager (used by the Tauri command).
-pub fn get_current_session_info() -> Option<NowPlayingInfo> {
-    let manager = get_session_manager();
-    get_current_session_info_with_manager(manager.as_ref())
-}
