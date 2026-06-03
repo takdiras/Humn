@@ -1,9 +1,10 @@
 import "./App.css";
 import { useNowPlaying } from "./hooks/useNowPlaying";
 import { useLyrics } from "./hooks/useLyrics";
+import { useUpdater } from "./hooks/useUpdater";
 import { NowPlaying } from "./components/NowPlaying";
 import { LyricsView } from "./components/LyricsView";
-import { X, Minus, Maximize2, Minimize2 } from "lucide-react";
+import { X, Minus, Maximize2, Minimize2, ArrowUpCircle } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { cn } from "@/lib/utils";
 import { useEffect, useState, type MouseEvent } from "react";
@@ -35,6 +36,7 @@ function App() {
 
   const [isDocked, setIsDocked] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
+  const { state: updateState, install: installUpdate } = useUpdater();
 
   useEffect(() => {
     // Initial check
@@ -90,6 +92,20 @@ function App() {
             <img src="/Humn-text-light.svg" alt="Humn" className="h-3.5 w-auto flex-shrink-0 opacity-50" />
           </div>
           <div className="flex items-center gap-1">
+            {updateState.status === "available" && (
+              <button
+                onClick={installUpdate}
+                title={`Update to v${updateState.version}`}
+                className="w-5 h-5 rounded-full bg-blue-500/40 hover:bg-blue-500/70 flex items-center justify-center transition-colors cursor-default"
+              >
+                <ArrowUpCircle className="w-2.5 h-2.5 text-blue-200" />
+              </button>
+            )}
+            {updateState.status === "downloading" && (
+              <span className="text-[9px] text-blue-300/80 font-medium tabular-nums">
+                {updateState.progress}%
+              </span>
+            )}
             <button
               onClick={() => appWindow.minimize()}
               className="w-5 h-5 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors cursor-default"
