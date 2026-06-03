@@ -1,17 +1,8 @@
-use serde::{Deserialize, Serialize};
+use super::NowPlayingInfo;
 use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionManager,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus,
 };
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NowPlayingInfo {
-    pub title: String,
-    pub artist: String,
-    pub position_ms: i64,
-    pub duration_ms: i64,
-    pub is_playing: bool,
-}
 
 pub fn get_session_manager() -> Option<GlobalSystemMediaTransportControlsSessionManager> {
     GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
@@ -56,7 +47,22 @@ pub fn get_current_session_info_with_manager(
     })
 }
 
-/// Read the current SMTC session and return track info, or None if nothing is playing.
+/// Called every poll — reuses a thread-local session manager to avoid per-call COM overhead.
+pub fn get_now_playing() -> Option<NowPlayingInfo> {
+    use std::cell::OnceCell;
+
+    thread_local! {
+        static MANAGER: OnceCell<Option<GlobalSystemMediaTransportControlsSessionManager>> =
+            OnceCell::new();
+    }
+
+    MANAGER.with(|cell| {
+        let manager = cell.get_or_init(get_session_manager);
+        get_current_session_info_with_manager(manager.as_ref())
+    })
+}
+
+/// One-shot query without a persistent manager (used by the Tauri command).
 pub fn get_current_session_info() -> Option<NowPlayingInfo> {
     let manager = get_session_manager();
     get_current_session_info_with_manager(manager.as_ref())

@@ -2,22 +2,35 @@
 
 [![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/kabutakoo)
 
-A desktop lyrics overlay for Windows. Humn sits on top of your other windows and displays real-time synchronized lyrics for whatever is currently playing — detected automatically via the Windows System Media Transport Controls (SMTC) API.
+A desktop lyrics overlay for Windows, macOS, and Linux. Humn sits on top of your other windows and displays real-time synchronized lyrics for whatever is currently playing.
 
 ## Features
 
-- Auto-detects the current track from any SMTC-compatible player (Spotify, Apple Music, YouTube Music, etc.)
+- Auto-detects the current track from any supported player
 - Multi-provider lyrics with priority ranking: Apple Music TTML → BiniLyrics → QQ Music QRC → Musixmatch → LRCLib → KuGou
 - Word- and syllable-level sync where available
 - Transparent overlay mode (floats above other windows) and docked mode (snapped/maximized)
 - System tray integration
 
+## Platform Support
+
+| Platform | Detection method | Supported players |
+|---|---|---|
+| Windows 10/11 | System Media Transport Controls (SMTC) | Spotify, Apple Music, YouTube Music, and any SMTC-compatible app |
+| macOS | MediaRemote private framework | Spotify, Apple Music, and any player that registers with the system now-playing center |
+| Linux | MPRIS2 via D-Bus | Spotify, VLC, Rhythmbox, and any MPRIS2-compatible player |
+
 ## Requirements
 
-- Windows 10/11
+**All platforms**
 - [Rust](https://rustup.rs/) (stable toolchain)
 - [Bun](https://bun.sh/)
-- [Tauri CLI prerequisites](https://v2.tauri.app/start/prerequisites/) (WebView2, Visual Studio Build Tools)
+- [Tauri CLI prerequisites](https://v2.tauri.app/start/prerequisites/)
+
+**Linux only** — install these system packages before building:
+```bash
+sudo apt-get install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libdbus-1-dev pkg-config
+```
 
 ## Getting Started
 
@@ -61,9 +74,9 @@ src-tauri/                  # Rust backend
 Contributions are welcome. Here are some good areas to work on:
 
 - **New lyrics providers** — add a parser in `src/lib/betterLyricsApi.ts` and wire it into the priority list
-- **macOS/Linux support** — the SMTC backend is Windows-only; equivalents exist on other platforms (MediaRemote on macOS, MPRIS on Linux)
 - **UI improvements** — the frontend is plain React + TailwindCSS, easy to iterate on
 - **Performance** — lyrics parsing and scroll animations are areas worth profiling
+- **macOS/Linux testing** — cross-platform code is written but needs real-device validation
 
 ### Workflow
 
@@ -81,7 +94,9 @@ Please keep pull requests focused — one thing per PR makes review faster.
 | Frontend | React 19, TypeScript, TailwindCSS v4, Framer Motion |
 | Backend | Rust, Tauri v2 |
 | Build | Bun, Vite, TypeScript compiler |
-| Windows APIs | SMTC (`windows` crate) |
+| Windows | SMTC (`windows` crate) |
+| macOS | MediaRemote via `libloading` + `block` + `core-foundation` |
+| Linux | MPRIS2 via `mpris` crate |
 
 ## License
 

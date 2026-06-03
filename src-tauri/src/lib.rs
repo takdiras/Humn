@@ -1,27 +1,56 @@
-mod smtc;
 mod lyrics;
 
-use smtc::NowPlayingInfo;
+#[cfg(target_os = "windows")]
+mod smtc;
+
+#[cfg(target_os = "macos")]
+mod macos;
+
+#[cfg(target_os = "linux")]
+mod linux;
+
+use serde::{Deserialize, Serialize};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager,
 };
 
-#[tauri::command]
-fn get_now_playing() -> Option<NowPlayingInfo> {
-    smtc::get_current_session_info()
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NowPlayingInfo {
+    pub title: String,
+    pub artist: String,
+    pub position_ms: i64,
+    pub duration_ms: i64,
+    pub is_playing: bool,
 }
 
-/// Spawn a background thread that polls SMTC every 100 ms and emits Tauri events.
-fn start_smtc_polling(app_handle: tauri::AppHandle) {
+fn get_info() -> Option<NowPlayingInfo> {
+    #[cfg(target_os = "windows")]
+    return smtc::get_now_playing();
+
+    #[cfg(target_os = "macos")]
+    return macos::get_now_playing();
+
+    #[cfg(target_os = "linux")]
+    return linux::get_now_playing();
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    None
+}
+
+#[tauri::command]
+fn get_now_playing() -> Option<NowPlayingInfo> {
+    get_info()
+}
+
+fn start_now_playing_polling(app_handle: tauri::AppHandle) {
     std::thread::spawn(move || {
         let mut last_title = String::new();
         let mut last_artist = String::new();
-        let manager = smtc::get_session_manager();
 
         loop {
-            match smtc::get_current_session_info_with_manager(manager.as_ref()) {
+            match get_info() {
                 Some(info) => {
                     let track_changed =
                         info.title != last_title || info.artist != last_artist;
@@ -100,11 +129,14 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             setup_tray(app)?;
-            start_smtc_polling(app.handle().clone());
+            start_now_playing_polling(app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_now_playing, lyrics::stream_lyrics, lyrics::verify_turnstile])
+        .invoke_handler(tauri::generate_handler![
+            get_now_playing,
+            lyrics::stream_lyrics,
+            lyrics::verify_turnstile
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-
