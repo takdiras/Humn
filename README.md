@@ -95,7 +95,7 @@ Please keep pull requests focused — one thing per PR makes review faster.
 | Backend | Rust, Tauri v2 |
 | Build | Bun, Vite, TypeScript compiler |
 | Windows | SMTC (`windows` crate) |
-| macOS | MediaRemote via `libloading` + `block` + `core-foundation` |
+| macOS | MediaRemote via an Objective-C helper loaded into `/usr/bin/perl` |
 | Linux | MPRIS2 via `mpris` crate |
 
 ## License

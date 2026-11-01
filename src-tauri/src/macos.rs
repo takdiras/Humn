@@ -1,104 +1,72 @@
 use super::NowPlayingInfo;
-use block::ConcreteBlock;
-use core_foundation::{
-    base::{CFType, TCFType},
-    dictionary::CFDictionary,
-    number::CFNumber,
-    string::CFString,
-};
-use libloading::Library;
-use std::ffi::c_void;
-use std::sync::mpsc;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::sync::{Mutex, Once};
 use std::time::Duration;
 
-// GCD is part of libSystem on macOS — always linked.
-#[link(name = "System")]
-extern "C" {
-    // QOS_CLASS_DEFAULT = 0x15
-    fn dispatch_get_global_queue(identifier: i64, flags: u64) -> *mut c_void;
-}
+// Since macOS 15.4, MediaRemote ignores processes that aren't Apple-signed, so
+// the helper (src/macos_helper.m, built by build.rs) runs inside /usr/bin/perl
+// and streams one JSON line per poll: a NowPlayingInfo object or null.
+const HELPER_DYLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libhumn_nowplaying.dylib"));
 
-// Keep MediaRemote.framework open for the lifetime of the polling thread.
-thread_local! {
-    static MEDIA_REMOTE: Option<Library> = unsafe {
-        Library::new(
-            "/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote",
-        )
-        .ok()
-    };
-}
+const PERL_LOADER: &str = r#"
+use DynaLoader;
+my $lib = DynaLoader::dl_load_file($ARGV[0], 0) or die DynaLoader::dl_error();
+my $sym = DynaLoader::dl_find_symbol($lib, "humn_stream") or die DynaLoader::dl_error();
+DynaLoader::dl_install_xsub("main::humn_stream", $sym);
+humn_stream();
+"#;
 
-fn cf_string(dict: &CFDictionary<CFString, CFType>, key: &str) -> Option<String> {
-    let k = CFString::new(key);
-    dict.find(&k)
-        .and_then(|v| v.downcast::<CFString>())
-        .map(|s| s.to_string())
-}
+static LATEST: Mutex<Option<NowPlayingInfo>> = Mutex::new(None);
+static START: Once = Once::new();
 
-fn cf_f64(dict: &CFDictionary<CFString, CFType>, key: &str) -> Option<f64> {
-    let k = CFString::new(key);
-    dict.find(&k)
-        .and_then(|v| v.downcast::<CFNumber>())
-        .and_then(|n| n.to_f64())
-}
-
-fn parse_dict(dict_ref: *mut c_void) -> Option<NowPlayingInfo> {
-    if dict_ref.is_null() {
-        return None;
+/// Writes the helper to the temp dir once per build (named by content hash).
+fn helper_path() -> std::io::Result<PathBuf> {
+    let mut hasher = DefaultHasher::new();
+    HELPER_DYLIB.hash(&mut hasher);
+    let path = std::env::temp_dir().join(format!("humn-nowplaying-{:016x}.dylib", hasher.finish()));
+    if !path.exists() {
+        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+        std::fs::write(&tmp, HELPER_DYLIB)?;
+        std::fs::rename(&tmp, &path)?;
     }
-    let dict = unsafe {
-        CFDictionary::<CFString, CFType>::wrap_under_get_rule(dict_ref as _)
-    };
+    Ok(path)
+}
 
-    let title = cf_string(&dict, "kMRMediaRemoteNowPlayingInfoTitle").unwrap_or_default();
-    let artist = cf_string(&dict, "kMRMediaRemoteNowPlayingInfoArtist").unwrap_or_default();
+/// Runs the helper until it exits, storing each snapshot in `LATEST`.
+fn run_helper() -> std::io::Result<()> {
+    let mut child = Command::new("/usr/bin/perl")
+        .arg("-e")
+        .arg(PERL_LOADER)
+        .arg(helper_path()?)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
 
-    if title.is_empty() && artist.is_empty() {
-        return None;
+    let stdout = child.stdout.take().expect("stdout is piped");
+    for line in BufReader::new(stdout).lines() {
+        let info = serde_json::from_str::<Option<NowPlayingInfo>>(&line?).ok().flatten();
+        *LATEST.lock().unwrap() = info;
     }
-
-    let duration_ms = cf_f64(&dict, "kMRMediaRemoteNowPlayingInfoDuration")
-        .map(|d| (d * 1000.0) as i64)
-        .unwrap_or(0);
-    let position_ms = cf_f64(&dict, "kMRMediaRemoteNowPlayingInfoElapsedTime")
-        .map(|p| (p * 1000.0) as i64)
-        .unwrap_or(0);
-    let is_playing = cf_f64(&dict, "kMRMediaRemoteNowPlayingInfoPlaybackRate")
-        .map(|r| r > 0.0)
-        .unwrap_or(false);
-
-    if position_ms == 0 && duration_ms > 5000 {
-        return None;
-    }
-
-    Some(NowPlayingInfo {
-        title,
-        artist,
-        position_ms,
-        duration_ms,
-        is_playing,
-    })
+    child.wait()?;
+    Ok(())
 }
 
 pub fn get_now_playing() -> Option<NowPlayingInfo> {
-    let (tx, rx) = mpsc::channel::<Option<NowPlayingInfo>>();
-
-    let handler = ConcreteBlock::new(move |dict_ref: *mut c_void| {
-        let _ = tx.send(parse_dict(dict_ref));
+    START.call_once(|| {
+        std::thread::spawn(|| loop {
+            let _ = run_helper();
+            *LATEST.lock().unwrap() = None;
+            std::thread::sleep(Duration::from_secs(2));
+        });
     });
-    let handler = handler.copy();
 
-    MEDIA_REMOTE.with(|lib_opt| -> Option<()> {
-        let lib = lib_opt.as_ref()?;
-        unsafe {
-            type GetNowPlayingFn = unsafe extern "C" fn(*mut c_void, *const c_void);
-            let func: libloading::Symbol<GetNowPlayingFn> =
-                lib.get(b"MRMediaRemoteGetNowPlayingInfo").ok()?;
-            let queue = dispatch_get_global_queue(0x15, 0);
-            func(queue, &*handler as *const _ as *const c_void);
-        }
-        Some(())
-    })?;
-
-    rx.recv_timeout(Duration::from_millis(200)).ok().flatten()
+    let info = LATEST.lock().unwrap().clone()?;
+    if info.position_ms == 0 && info.duration_ms > 5000 {
+        return None;
+    }
+    Some(info)
 }
